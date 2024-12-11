@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "AG音频解析",
+  "version": "2.0",
+  "description": "AG音频解析,已开源智能音频播放检测和下载工具|作者:Achord|邮箱:achordchan@gmail.com",  
+  "author": "Achord <achordchan@gmail.com>",
+  "permissions": [
+    "activeTab",
+    "webRequest",
+    "downloads", 
+    "storage",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": "icons/logo.png"
+  },
+  "icons": {
+    "128": "icons/logo.png"
+  },
+  "web_accessible_resources": [{
+    "resources": ["lib/jszip.min.js"],
+    "matches": ["<all_urls>"]
+  }]
+}

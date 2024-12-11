@@ -3,7 +3,7 @@
 ![Version](https://img.shields.io/badge/version-2.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-一款智能的音频播放检测和下载工具，只在音频播放时工作。
+一个优雅的音频播放检测和下载工具的chrome扩展，支持音频试听，下载，批量打包下载，悬浮图标开关，错误处理优化，跨域资源访问，标签页状态同步，支持多种音频格式 (MP3, WAV, OGG, M4A, AAC, FLAC)-目前针对爱给网进行测试
 
 ## ✨ 特性
 

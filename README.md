@@ -1,6 +1,6 @@
 # AG 音频解析
 
-[![Version](https://img.shields.io/badge/version-2.0.3-blue.svg)](https://github.com/Achordchan/music-chrome/releases)
+[![Version](https://img.shields.io/badge/version-2.0.4-blue.svg)](https://github.com/Achordchan/music-chrome/releases)
 [![Manifest](https://img.shields.io/badge/manifest-v3-orange.svg)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -71,7 +71,9 @@ background.js        Service Worker，负责网络嗅探与资源索引
 content.js           内容脚本，处理页面内播放、下载与悬浮入口
 popup/               扩展面板界面与交互逻辑
 rules.json           declarativeNetRequest 请求头规则
+icons/               各尺寸扩展图标
 lib/jszip.min.js     ZIP 打包依赖
+store-assets/        应用商店素材与文案（不随扩展打包）
 ```
 
 ## 后续规划
@@ -83,6 +85,12 @@ lib/jszip.min.js     ZIP 打包依赖
 - 扩展更多站点的适配规则
 
 ## 更新日志
+
+**v2.0.4**
+
+- 补充 16 / 32 / 48 / 128 四种尺寸图标，按尺寸分别调整描边与元素密度
+- 改写扩展描述为面向用户的功能说明
+- 新增 `store-assets/` 存放应用商店素材与文案
 
 **v2.0.3**
 

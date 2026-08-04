@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AG音频解析",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "自动嗅探网页音频资源，支持在线试听、单个下载与批量打包，覆盖 MP3/WAV/OGG/M4A/AAC/FLAC 等主流格式。",
   "author": "Achord <achordchan@gmail.com>",
   "permissions": [

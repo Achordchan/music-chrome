@@ -1,10 +1,8 @@
-// 存储检测到的音频元素和标题
+// 存储检测到的音频元素
 let audioElements = new Set();
-let audioTitles = new Map();
 let currentPlayingAudio = null;
-
-// 存储原始的音频元素
-const originalAudioElements = new Map();
+// 记录当前试听的 URL：复用页面自身的媒体元素时读不到 data-sniffer-url
+let currentPlayingUrl = null;
 
 // 向background script报告检测到的音频元素
 function reportAudioElement(url, title) {
@@ -136,7 +134,10 @@ function addFloatingButton() {
       chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }, (response) => {
         if (chrome.runtime.lastError) {
           console.debug('Extension context error:', chrome.runtime.lastError);
-          // 不再重新加载页面
+          return;
+        }
+        if (response?.success === false) {
+          console.debug('Failed to open popup:', response.error);
         }
       });
     } catch (error) {
@@ -226,110 +227,82 @@ function handleExtensionError() {
   return false;
 }
 
+// 在页面中查找与该 URL 对应的已有媒体元素
+function findMediaByUrl(url) {
+  return Array.from(document.querySelectorAll('audio, video')).find(
+    media => media.src === url ||
+             media.currentSrc === url ||
+             media.dataset.originalSrc === url ||
+             Array.from(media.getElementsByTagName('source')).some(source => source.src === url)
+  ) || null;
+}
+
+// 移除上一次由扩展创建的隐藏音频元素
+function removeSnifferAudio() {
+  document.querySelectorAll('audio[data-sniffer-url]').forEach(el => el.remove());
+}
+
+// 创建供试听使用的隐藏音频元素
+function createSnifferAudio(url) {
+  removeSnifferAudio();
+
+  const audioElement = document.createElement('audio');
+  audioElement.setAttribute('data-sniffer-url', url);
+  audioElement.dataset.originalSrc = url;
+  audioElement.style.display = 'none';
+  audioElement.controls = false;
+  audioElement.src = url;
+  document.body.appendChild(audioElement);
+
+  return audioElement;
+}
+
+// 停止当前播放并清理扩展创建的元素
+function stopCurrentAudio() {
+  if (currentPlayingAudio) {
+    currentPlayingAudio.pause();
+    currentPlayingAudio.currentTime = 0;
+    currentPlayingAudio = null;
+  }
+  currentPlayingUrl = null;
+  removeSnifferAudio();
+}
+
 // 监听来自popup的消息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'PLAY_AUDIO') {
-    try {
-      // 停止当前正在播放的音频
-      if (currentPlayingAudio) {
-        currentPlayingAudio.pause();
-        currentPlayingAudio.currentTime = 0;
+    // sendResponse 只能生效一次，用守卫避免后续播放事件重复调用导致静默失败
+    let responded = false;
+    const respondOnce = (payload) => {
+      if (responded) return;
+      responded = true;
+      sendResponse(payload);
+    };
+
+    (async () => {
+      try {
+        stopCurrentAudio();
+
+        const media = findMediaByUrl(message.url) || createSnifferAudio(message.url);
+        currentPlayingAudio = media;
+        currentPlayingUrl = message.url;
+
+        await media.play();
+        respondOnce({ status: 'playing' });
+      } catch (error) {
+        console.debug('Error playing audio:', error);
+        currentPlayingAudio = null;
+        currentPlayingUrl = null;
+        removeSnifferAudio();
+        respondOnce({ status: 'error', error: error.message });
       }
+    })();
 
-      // 尝试查找页面上已存在的相同URL的音频/视频元素
-      const existingMedia = Array.from(document.querySelectorAll('audio, video')).find(
-        media => media.src === message.url || media.dataset.originalSrc === message.url ||
-                Array.from(media.getElementsByTagName('source')).some(source => source.src === message.url)
-      );
-
-      if (existingMedia) {
-        // 如果找到现有的媒体元素，直接使用它
-        currentPlayingAudio = existingMedia;
-        currentPlayingAudio.play()
-          .then(() => sendResponse({ status: 'playing' }))
-          .catch(error => {
-            console.error('Error playing existing media:', error);
-            sendResponse({ status: 'error', error: error.message });
-          });
-      } else {
-        // 创建新的音频元素
-        let audioElement = document.createElement('audio');
-        audioElement.setAttribute('data-sniffer-url', message.url);
-        audioElement.style.display = 'none';
-        audioElement.controls = false;
-        
-        // 设置事件监听器
-        audioElement.onplay = () => {
-          sendResponse({ status: 'playing' });
-          currentPlayingAudio = audioElement;
-        };
-
-        audioElement.onpause = () => {
-          sendResponse({ status: 'paused' });
-        };
-
-        audioElement.onended = () => {
-          sendResponse({ status: 'ended' });
-        };
-
-        audioElement.onerror = (e) => {
-          console.error('Audio error:', e);
-          // 如果播放失败，尝试使用原始元素
-          const originalMedia = Array.from(document.querySelectorAll('audio, video')).find(
-            media => media.src === message.url || 
-                    Array.from(media.getElementsByTagName('source')).some(source => source.src === message.url)
-          );
-          
-          if (originalMedia) {
-            currentPlayingAudio = originalMedia;
-            originalMedia.play()
-              .then(() => sendResponse({ status: 'playing' }))
-              .catch(error => sendResponse({ status: 'error', error: error.message }));
-          } else {
-            sendResponse({ status: 'error', error: e.message });
-          }
-        };
-
-        // 设置音频源并播放
-        audioElement.src = message.url;
-        audioElement.dataset.originalSrc = message.url;
-        document.body.appendChild(audioElement);
-        
-        audioElement.play()
-          .catch(error => {
-            console.error('Error playing new audio:', error);
-            // 如果直接播放失败，尝试克��原始元素的方式
-            const originalMedia = Array.from(document.querySelectorAll('audio, video')).find(
-              media => media.src === message.url || 
-                      Array.from(media.getElementsByTagName('source')).some(source => source.src === message.url)
-            );
-            
-            if (originalMedia) {
-              const clonedMedia = originalMedia.cloneNode(true);
-              clonedMedia.style.display = 'none';
-              originalMedia.parentElement.appendChild(clonedMedia);
-              currentPlayingAudio = clonedMedia;
-              return clonedMedia.play();
-            }
-            throw error;
-          })
-          .then(() => sendResponse({ status: 'playing' }))
-          .catch(error => sendResponse({ status: 'error', error: error.message }));
-      }
-
-      return true; // 保持消息通道开启
-    } catch (error) {
-      console.error('Error playing audio:', error);
-      sendResponse({ status: 'error', error: error.message });
-    }
+    return true; // 保持消息通道开启
   }
 
   if (message.type === 'STOP_AUDIO') {
-    if (currentPlayingAudio) {
-      currentPlayingAudio.pause();
-      currentPlayingAudio.currentTime = 0;
-      currentPlayingAudio = null;
-    }
+    stopCurrentAudio();
     sendResponse({ status: 'stopped' });
   }
 
@@ -339,49 +312,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         isPlaying: !currentPlayingAudio.paused,
         currentTime: currentPlayingAudio.currentTime,
         duration: currentPlayingAudio.duration,
-        url: currentPlayingAudio.getAttribute('data-sniffer-url')
+        url: currentPlayingUrl
       });
     } else {
       sendResponse({ isPlaying: false });
     }
   }
 
-  if (message.type === 'GET_AUDIO_DATA') {
-    // 查找原始音频元素
-    const originalAudio = Array.from(document.getElementsByTagName('audio')).find(
-      audio => audio.src === message.url || audio.src.includes(new URL(message.url).pathname.split('/').pop())
-    );
-
-    if (originalAudio) {
-      // 获取音频的相关信息
-      const audioInfo = {
-        url: originalAudio.src,
-        referer: window.location.href,
-        cookie: document.cookie,
-        title: originalAudio.title || document.title,
-        type: originalAudio.type || 'audio/mpeg'
-      };
-
-      // 发送消息给background script处理下载
-      chrome.runtime.sendMessage({
-        type: 'DOWNLOAD_AUDIO_DATA',
-        audioInfo: audioInfo
-      }, (response) => {
-        sendResponse(response);
-      });
-
-      return true; // 保持消息通道开启
-    } else {
-      sendResponse({
-        success: false,
-        error: 'Audio element not found'
-      });
-    }
-  }
-
   if (message.type === 'SEEK_AUDIO') {
-    if (currentPlayingAudio) {
-      const duration = currentPlayingAudio.duration;
+    const duration = currentPlayingAudio?.duration;
+    // duration 为 NaN/Infinity 时赋值 currentTime 会抛错
+    if (currentPlayingAudio && Number.isFinite(duration)) {
       currentPlayingAudio.currentTime = duration * message.position;
       sendResponse({ success: true });
     } else {
@@ -597,20 +538,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 
-  if (message.type === 'CHECK_AUDIO_PLAYING') {
-    // 检查是否有正在播放的音频
-    const playingAudio = Array.from(document.getElementsByTagName('audio')).find(
-      audio => !audio.paused && !audio.ended
-    );
-    
-    sendResponse({ isPlaying: !!playingAudio });
-    return true;
-  }
 });
 
 // 查找音频标题
 function findAudioTitle(element) {
-  // 1. 尝试获取音频元素的 title 性
+  // 1. 尝试获取音频元素的 title 属性
   let title = element.getAttribute('title') || element.getAttribute('aria-label');
   
   // 2. 查找附近的标题元素
@@ -640,7 +572,7 @@ function findAudioTitle(element) {
     }
   }
 
-  // 4. 查找邻的文本节点
+  // 4. 查找相邻的文本节点
   if (!title) {
     const walker = document.createTreeWalker(
       element.parentElement || document.body,
@@ -660,25 +592,4 @@ function findAudioTitle(element) {
   }
 
   return title || null;
-}
-
-// 从元素中提取可能的音频URL
-function extractAudioUrls(element) {
-  const urls = new Set();
-  
-  // 检查data属性
-  Array.from(element.attributes).forEach(attr => {
-    if (attr.value?.includes('.mp3') || 
-        attr.value?.includes('.wav') || 
-        attr.value?.includes('.ogg')) {
-      try {
-        const url = new URL(attr.value);
-        urls.add(url.href);
-      } catch (e) {
-        // 忽略无效URL
-      }
-    }
-  });
-
-  return Array.from(urls);
 }

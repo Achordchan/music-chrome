@@ -12,6 +12,7 @@ const AUDIO_TYPES = {
 
 // 存储当前显示的音频资源
 let currentAudioResources = [];
+let popupTabId = null;
 
 // 存储音频时长信息
 const audioDurations = new Map();
@@ -19,6 +20,10 @@ const audioDurations = new Map();
 // 音频控制相关变量
 let currentAudioInfo = null;
 let progressUpdateInterval = null;
+
+// 记录已知音频URL，用于识别新增项
+let knownAudioUrls = new Set();
+let isFirstLoad = true;
 
 // 添加标签页状态检查函数
 async function isTabReady(tabId) {
@@ -53,6 +58,9 @@ async function sendMessageToTab(tabId, message) {
 
 // 初始化
 async function initializePopup() {
+  const activeTabs = await chrome.tabs.query({active: true, currentWindow: true});
+  popupTabId = activeTabs[0]?.id ?? null;
+
   // 获取当前检测到的音频资源
   chrome.runtime.sendMessage({ type: 'GET_AUDIO_RESOURCES' }, (response) => {
     updateAudioList(response || []);
@@ -92,6 +100,8 @@ async function initializePopup() {
     const tabs = await chrome.tabs.query({active: true, currentWindow: true});
     if (!tabs[0]) return;
 
+    setupProgressBarEvents();
+
     const status = await sendMessageToTab(tabs[0].id, {
       type: 'GET_AUDIO_STATUS'
     }) || { isPlaying: false };
@@ -119,9 +129,6 @@ async function initializePopup() {
 
           // 开始更新进度条
           startProgressUpdate(tabs[0].id);
-
-          // 添加进度条事件监听
-          setupProgressBarEvents(tabs[0].id);
         }
       }
     }
@@ -130,59 +137,19 @@ async function initializePopup() {
   }
 }
 
-// 将进度条事件监听抽取为单独的函数
-function setupProgressBarEvents(tabId) {
+// 绑定进度条的点击与拖动事件，只在初始化时调用一次
+function setupProgressBarEvents() {
   const progressBar = document.querySelector('.progress-bar');
   if (!progressBar) return;
 
-  // 移除旧的事件监听器
-  const newProgressBar = progressBar.cloneNode(true);
-  progressBar.parentNode.replaceChild(newProgressBar, progressBar);
+  // 由鼠标位置换算成 0-1 的播放位置
+  const getPosition = (clientX) => {
+    const rect = progressBar.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  };
 
-  // 添加点击事件
-  newProgressBar.addEventListener('click', async (e) => {
+  const seekTo = async (pos) => {
     if (!currentAudioInfo) return;
-    
-    const rect = newProgressBar.getBoundingClientRect();
-    const pos = (e.clientX - rect.left) / rect.width;
-    
-    try {
-      await sendMessageToTab(tabId, {
-        type: 'SEEK_AUDIO',
-        position: pos
-      });
-    } catch (error) {
-      console.debug('Error seeking audio:', error);
-    }
-  });
-
-  // 添加拖动功能
-  let isDragging = false;
-  newProgressBar.addEventListener('mousedown', () => {
-    isDragging = true;
-  });
-
-  document.addEventListener('mousemove', (e) => {
-    if (!isDragging || !currentAudioInfo) return;
-    
-    const rect = newProgressBar.getBoundingClientRect();
-    let pos = (e.clientX - rect.left) / rect.width;
-    pos = Math.max(0, Math.min(1, pos));
-    
-    const progressCurrent = newProgressBar.querySelector('.progress-current');
-    progressCurrent.style.width = `${pos * 100}%`;
-  });
-
-  document.addEventListener('mouseup', async (e) => {
-    if (!isDragging || !currentAudioInfo) {
-      isDragging = false;
-      return;
-    }
-    
-    const rect = newProgressBar.getBoundingClientRect();
-    let pos = (e.clientX - rect.left) / rect.width;
-    pos = Math.max(0, Math.min(1, pos));
-    
     try {
       await sendMessageToTab(currentAudioInfo.tabId, {
         type: 'SEEK_AUDIO',
@@ -191,9 +158,52 @@ function setupProgressBarEvents(tabId) {
     } catch (error) {
       console.debug('Error seeking audio:', error);
     }
-    
-    isDragging = false;
+  };
+
+  let isDragging = false;
+
+  progressBar.addEventListener('click', (e) => {
+    if (!currentAudioInfo) return;
+    seekTo(getPosition(e.clientX));
   });
+
+  progressBar.addEventListener('mousedown', () => {
+    isDragging = true;
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging || !currentAudioInfo) return;
+
+    const pos = getPosition(e.clientX);
+    const progressCurrent = progressBar.querySelector('.progress-current');
+    progressCurrent.style.width = `${pos * 100}%`;
+  });
+
+  document.addEventListener('mouseup', (e) => {
+    if (!isDragging) return;
+    isDragging = false;
+    seekTo(getPosition(e.clientX));
+  });
+}
+
+// 重置试听按钮和播放器面板
+function resetPreviewUI() {
+  document.querySelectorAll('.preview-btn').forEach(btn => {
+    btn.textContent = '试听';
+    btn.classList.remove('playing');
+  });
+
+  const previewContainer = document.getElementById('audioPreview');
+  if (previewContainer) {
+    previewContainer.style.display = 'none';
+  }
+
+  const progressCurrent = document.querySelector('.progress-bar .progress-current');
+  if (progressCurrent) {
+    progressCurrent.style.width = '0%';
+  }
+
+  stopProgressUpdate();
 }
 
 // 修改 DOMContentLoaded 事件监听
@@ -201,7 +211,7 @@ document.addEventListener('DOMContentLoaded', initializePopup);
 
 // 监听来自background的更新消息
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === 'AUDIO_RESOURCES_UPDATED') {
+  if (message.type === 'AUDIO_RESOURCES_UPDATED' && message.tabId === popupTabId) {
     updateAudioList(message.data);
   }
 });
@@ -215,7 +225,7 @@ async function updateAudioList(resources) {
 
   if (resources.length === 0) {
     audioList.style.display = 'none';
-    emptyState.style.display = 'block';
+    emptyState.style.display = 'flex';
     // 禁用下载全部按钮
     downloadAllBtn.disabled = true;
     downloadAllBtn.innerHTML = `
@@ -238,8 +248,33 @@ async function updateAudioList(resources) {
     下载全部
   `;
 
+  // 按时间降序排序，新音频在前
+  resources.sort((a, b) => b.timestamp - a.timestamp);
+
+  // 识别新增的音频URL
+  const now = Date.now();
+  const newUrls = new Set();
+  if (isFirstLoad) {
+    // 首次加载：最近5秒内检测到的标为新
+    resources.forEach(r => {
+      if (now - r.timestamp < 5000) {
+        newUrls.add(r.url);
+      }
+    });
+  } else {
+    // 后续更新：不在已知集合中的标为新
+    resources.forEach(r => {
+      if (!knownAudioUrls.has(r.url)) {
+        newUrls.add(r.url);
+      }
+    });
+  }
+  // 更新已知URL集合
+  resources.forEach(r => knownAudioUrls.add(r.url));
+  isFirstLoad = false;
+
   audioList.innerHTML = resources
-    .map((resource, index) => createAudioItemHTML(resource, index))
+    .map((resource, index) => createAudioItemHTML(resource, index, newUrls.has(resource.url)))
     .join('');
 
   // 获取音频时长
@@ -257,7 +292,7 @@ async function updateAudioList(resources) {
           durationElement.textContent = '时长未知';
         }
       } catch (error) {
-        durationElement.textContent = '时长���知';
+        durationElement.textContent = '时长未知';
       }
     } else {
       durationElement.textContent = audioDurations.get(resource.url);
@@ -274,16 +309,17 @@ async function updateAudioList(resources) {
 }
 
 // 创建音频项的HTML
-function createAudioItemHTML(resource, index) {
+function createAudioItemHTML(resource, index, isNew = false) {
   const filename = getFilenameFromUrl(resource.url, resource);
   const format = getAudioFormat(resource.url);
   const duration = audioDurations.get(resource.url) || '获取中...';
-  
+  const newBadge = isNew ? '<span class="new-badge">NEW</span>' : '';
+
   return `
     <div class="audio-item">
       <div class="audio-item-header">
         <div class="audio-info">
-          <div class="audio-name">${filename}</div>
+          <div class="audio-name"><span class="audio-name-text">${filename}</span>${newBadge}</div>
           <div class="audio-meta">
             <span class="audio-format">${format}</span>
             <span class="audio-duration">${duration}</span>
@@ -331,7 +367,7 @@ async function downloadAudio(index) {
   if (!resource) return;
 
   try {
-    // 取当前标签页
+    // 获取当前标签页
     const tabs = await chrome.tabs.query({active: true, currentWindow: true});
     if (!tabs[0]) {
       return; // 静默失败
@@ -363,6 +399,9 @@ async function downloadAll() {
     return;
   }
 
+  // 固定本次打包列表，网络嗅探更新不得改变正在执行的循环
+  const resourcesToDownload = [...currentAudioResources];
+
   const downloadBtn = document.getElementById('downloadAllBtn');
   const originalText = downloadBtn.innerHTML;
   
@@ -384,43 +423,42 @@ async function downloadAll() {
 
     // 创建一个新的 JSZip 实例
     const zip = new JSZip();
-    
-    // 用于存储所有下载Promise的数组
-    const downloads = currentAudioResources.map(async (resource) => {
+    const failedDownloads = [];
+    let successCount = 0;
+
+    // 逐个获取，避免多个大文件同时转 base64 导致弹窗内存暴涨
+    for (let index = 0; index < resourcesToDownload.length; index += 1) {
+      const resource = resourcesToDownload[index];
+      downloadBtn.innerHTML = `
+        <svg class="spinner" width="16" height="16" viewBox="0 0 16 16">
+          <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="2" fill="none"/>
+        </svg>
+        获取中 ${index + 1}/${resourcesToDownload.length}
+      `;
+
       try {
-        const response = await fetch(resource.url, {
-          method: 'GET',
-          headers: {
-            'Accept': 'audio/*,*/*',
-            'Referer': tabs[0].url,
-            'Origin': new URL(tabs[0].url).origin
-          },
-          credentials: 'include'
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP Error: ${response.status}`);
-        }
-
-        const blob = await response.blob();
+        const blob = await fetchAudioBlob(resource.url);
         const filename = getFilenameFromUrl(resource.url, resource);
-        await zip.file(filename, blob);
-        return true;
+        zip.file(filename, blob);
+        successCount += 1;
       } catch (error) {
         console.debug(`Failed to download ${resource.url}:`, error);
-        return false;
+        failedDownloads.push(error.message || '未知错误');
       }
-    });
-
-    // 等待所有下载完成
-    const results = await Promise.all(downloads);
+    }
     
     // 检查是否有文件成功下载
-    if (!results.some(result => result)) {
-      throw new Error('No files were downloaded successfully');
+    if (successCount === 0) {
+      throw new Error(failedDownloads[0] || '所有音频获取失败');
     }
 
     // 生成zip文件
+    downloadBtn.innerHTML = `
+      <svg class="spinner" width="16" height="16" viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="2" fill="none"/>
+      </svg>
+      正在生成 ZIP...
+    `;
     const zipBlob = await zip.generateAsync({
       type: 'blob',
       compression: 'DEFLATE',
@@ -431,22 +469,59 @@ async function downloadAll() {
     const url = URL.createObjectURL(zipBlob);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     
-    chrome.downloads.download({
-      url: url,
-      filename: `audio_collection_${timestamp}.zip`,
-      saveAs: true
-    }, (downloadId) => {
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    });
+    try {
+      await chrome.downloads.download({
+        url: url,
+        filename: `audio_collection_${timestamp}.zip`,
+        saveAs: true
+      });
+    } finally {
+      // 留出充足时间让 downloads API 读取 blob URL
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
+
+    if (failedDownloads.length > 0) {
+      alert(`已打包 ${successCount} 个音频，${failedDownloads.length} 个获取失败`);
+    }
 
   } catch (error) {
     console.debug('Error in batch download:', error);
-    alert('批量下载失败，请重试');
+    alert(`批量下载失败：${error.message || '未知错误'}`);
   } finally {
     // 恢复按钮状态
     downloadBtn.disabled = false;
     downloadBtn.innerHTML = originalText;
   }
+}
+
+// 扩展页面借助 host_permissions 与 DNR 请求头规则获取音频
+async function fetchAudioBlob(url) {
+  let directError = null;
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'audio/*,*/*',
+        'Range': 'bytes=0-'
+      },
+      credentials: 'include',
+      cache: 'no-store'
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    if (blob.size === 0) {
+      throw new Error('音频文件为空');
+    }
+    return blob;
+  } catch (error) {
+    directError = error;
+  }
+
+  throw directError || new Error('音频获取失败');
 }
 
 // 获取音频格式
@@ -523,10 +598,7 @@ async function previewAudio(index) {
         console.error('Error stopping audio:', error);
       }
       
-      previewBtn.textContent = '试听';
-      previewBtn.classList.remove('playing');
-      previewContainer.style.display = 'none';
-      stopProgressUpdate();
+      resetPreviewUI();
       return;
     }
 
@@ -558,76 +630,13 @@ async function previewAudio(index) {
 
       // 开始更新进度条
       startProgressUpdate(tabs[0].id);
-
-      // 添加进度条点击事件
-      const progressBar = document.querySelector('.progress-bar');
-      progressBar.addEventListener('click', async (e) => {
-        if (!currentAudioInfo) return;
-        
-        const rect = progressBar.getBoundingClientRect();
-        const pos = (e.clientX - rect.left) / rect.width;
-        
-        try {
-          await sendMessageToTab(tabs[0].id, {
-            type: 'SEEK_AUDIO',
-            position: pos
-          });
-        } catch (error) {
-          console.debug('Error seeking audio:', error);
-        }
-      });
-
-      // 添加进度条拖动功能
-      let isDragging = false;
-      progressBar.addEventListener('mousedown', () => {
-        isDragging = true;
-      });
-
-      document.addEventListener('mousemove', (e) => {
-        if (!isDragging || !currentAudioInfo) return;
-        
-        const rect = progressBar.getBoundingClientRect();
-        let pos = (e.clientX - rect.left) / rect.width;
-        pos = Math.max(0, Math.min(1, pos)); // 限制在 0-1 之间
-        
-        // 更新进度条显示
-        const progressCurrent = progressBar.querySelector('.progress-current');
-        progressCurrent.style.width = `${pos * 100}%`;
-      });
-
-      document.addEventListener('mouseup', async (e) => {
-        if (!isDragging || !currentAudioInfo) {
-          isDragging = false;
-          return;
-        }
-        
-        const rect = progressBar.getBoundingClientRect();
-        let pos = (e.clientX - rect.left) / rect.width;
-        pos = Math.max(0, Math.min(1, pos)); // 限制在 0-1 之间
-        
-        try {
-          await sendMessageToTab(currentAudioInfo.tabId, {
-            type: 'SEEK_AUDIO',
-            position: pos
-          });
-        } catch (error) {
-          console.debug('Error seeking audio:', error);
-        }
-        
-        isDragging = false;
-      });
     } else {
       throw new Error(response.error || 'Failed to play audio');
     }
   } catch (error) {
     console.error('Failed to play audio:', error);
     alert('无法播放音频，请检查网络连接或重试。');
-    
-    // 重置按钮状态
-    previewBtn.textContent = '试听';
-    previewBtn.classList.remove('playing');
-    previewContainer.style.display = 'none';
-    stopProgressUpdate();
+    resetPreviewUI();
   }
 }
 
@@ -642,8 +651,8 @@ function startProgressUpdate(tabId) {
       const status = await sendMessageToTab(tabId, {
         type: 'GET_AUDIO_STATUS'
       });
-      if (!status) {
-        stopProgressUpdate();
+      if (!status || !status.isPlaying) {
+        resetPreviewUI();
         return;
       }
 
@@ -736,7 +745,7 @@ async function getAudioDuration(url) {
         audio.addEventListener('loadedmetadata', handleSuccess);
         audio.addEventListener('error', handleError);
 
-        // 置跨域属性
+        // 设置跨域属性
         audio.crossOrigin = 'anonymous';
 
         // 先尝试直接加载

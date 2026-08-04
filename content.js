@@ -4,6 +4,32 @@ let currentPlayingAudio = null;
 // 记录当前试听的 URL：复用页面自身的媒体元素时读不到 data-sniffer-url
 let currentPlayingUrl = null;
 
+// MIME 到扩展名的映射，用于下载时确定正确的后缀
+const AUDIO_EXTENSIONS = {
+  'audio/mpeg': 'mp3',
+  'audio/mp3': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/ogg': 'ogg',
+  'application/ogg': 'ogg',
+  'audio/flac': 'flac',
+  'audio/aac': 'aac',
+  'audio/x-aac': 'aac',
+  'audio/x-m4a': 'm4a',
+  'audio/mp4': 'm4a',
+  'audio/webm': 'webm'
+};
+
+// 响应头缺失或不可识别时，退回从 URL 路径推断扩展名
+function guessExtensionFromUrl(url) {
+  try {
+    const ext = new URL(url).pathname.toLowerCase().split('.').pop();
+    return Object.values(AUDIO_EXTENSIONS).includes(ext) ? ext : '';
+  } catch (e) {
+    return '';
+  }
+}
+
 // 向background script报告检测到的音频元素
 function reportAudioElement(url, title) {
   chrome.runtime.sendMessage({
@@ -378,26 +404,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .replace(/^_+|_+$/g, '')       // 移除首尾下划线
         .substring(0, 100);            // 限制长度
 
-      // 添加扩展名
-      filename = `${filename}.mp3`;
-
-      // 使用 fetch 下载
+      // 使用 fetch 下载，扩展名以响应头的 MIME 为准
       fetch(url)
         .then(response => {
-          if (!response.ok) {
-            return response.blob(); // 即使状态不是200也继续尝试
-          }
-          return response.blob();
+          const mime = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+          return response.blob().then(blob => ({ blob, mime }));
         })
-        .then(blob => {
+        .then(({ blob, mime }) => {
+          const ext = AUDIO_EXTENSIONS[mime] || guessExtensionFromUrl(url) || 'mp3';
           const blobUrl = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.style.display = 'none';
           a.href = blobUrl;
-          a.download = filename;
+          a.download = `${filename}.${ext}`;
           document.body.appendChild(a);
           a.click();
-          
+
           setTimeout(() => {
             document.body.removeChild(a);
             URL.revokeObjectURL(blobUrl);

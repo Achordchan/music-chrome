@@ -50,7 +50,7 @@ function handleResponse(details) {
   const contentType = getHeaderValue(headers, 'content-type');
 
   if (contentType && isAudioContentType(contentType)) {
-    checkAndAddAudio(details.url, details.tabId);
+    checkAndAddAudio(details.url, details.tabId, contentType);
   }
 }
 
@@ -91,18 +91,29 @@ function checkAndAddAudio(url, tabId, contentType = '', contentLength = '0', tit
   }
   const tabResources = audioResourcesByTab.get(tabId);
 
-  // 检查是否已经存在相同的URL
-  if (!tabResources.has(url)) {
-    // 添加新的音频资源
-    tabResources.set(url, {
-      url,
-      title,
-      timestamp: Date.now()
-    });
+  // 只保留 MIME 主体，去掉 charset 等参数
+  const mimeType = contentType.split(';')[0].trim().toLowerCase();
 
-    // 通知popup更新
-    notifyPopup(tabId);
+  const existing = tabResources.get(url);
+  if (existing) {
+    // 请求先于响应到达时记录里还没有 MIME，响应头到了再补上
+    if (mimeType && !existing.contentType) {
+      existing.contentType = mimeType;
+      notifyPopup(tabId);
+    }
+    return;
   }
+
+  // 添加新的音频资源
+  tabResources.set(url, {
+    url,
+    title,
+    contentType: mimeType,
+    timestamp: Date.now()
+  });
+
+  // 通知popup更新
+  notifyPopup(tabId);
 }
 
 // 通知 popup 更新

@@ -7,7 +7,11 @@ const AUDIO_TYPES = {
   'audio/aac': 'aac',
   'audio/x-m4a': 'm4a',
   'audio/mp3': 'mp3',
-  'audio/mp4': 'm4a'
+  'audio/mp4': 'm4a',
+  'audio/x-wav': 'wav',
+  'audio/x-aac': 'aac',
+  'audio/webm': 'webm',
+  'application/ogg': 'ogg'
 };
 
 // 存储当前显示的音频资源
@@ -311,7 +315,7 @@ async function updateAudioList(resources) {
 // 创建音频项的HTML
 function createAudioItemHTML(resource, index, isNew = false) {
   const filename = getFilenameFromUrl(resource.url, resource);
-  const format = getAudioFormat(resource.url);
+  const format = getAudioFormat(resource.url, resource.contentType) || '未知';
   const duration = audioDurations.get(resource.url) || '获取中...';
   const newBadge = isNew ? '<span class="new-badge">NEW</span>' : '';
 
@@ -337,27 +341,38 @@ function createAudioItemHTML(resource, index, isNew = false) {
 
 // 从URL中获取文件名
 function getFilenameFromUrl(url, resource) {
+  // 无法判断格式时统一按 mp3 处理，避免下载出无扩展名的文件
+  const ext = (getAudioFormat(url, resource?.contentType) || 'MP3').toLowerCase();
+
   try {
     // 1. 优先使用找到的标题
     if (resource.title) {
       // 处理标题中的非法字符
       const cleanTitle = resource.title.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim();
-      return `${cleanTitle}.${getAudioFormat(url).toLowerCase()}`;
+      if (cleanTitle) {
+        return `${cleanTitle}.${ext}`;
+      }
     }
 
     // 2. 如果没有标题，使用URL中的文件名
     const urlObj = new URL(url);
     const pathname = urlObj.pathname;
     const filename = pathname.split('/').pop();
-    
+
+    if (!filename) {
+      return `未知音频.${ext}`;
+    }
+
     // 3. 如果文件名看起来是ID，添加前缀
     if (/^[a-f0-9]{8,}$/i.test(filename)) {
-      return `audio_${filename}`;
+      return `audio_${filename}.${ext}`;
     }
-    
-    return filename || '未知音频';
+
+    // 4. 文件名自带音频扩展名时直接使用，否则补上推断出的扩展名
+    const currentExt = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+    return KNOWN_FORMATS.includes(currentExt) ? filename : `${filename}.${ext}`;
   } catch (e) {
-    return '未知音频';
+    return `未知音频.${ext}`;
   }
 }
 
@@ -524,38 +539,38 @@ async function fetchAudioBlob(url) {
   throw directError || new Error('音频获取失败');
 }
 
-// 获取音频格式
-function getAudioFormat(url) {
+// 已知音频扩展名
+const KNOWN_FORMATS = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma', 'webm'];
+
+// 获取音频格式，contentType 来自响应头，比 URL 更可靠
+function getAudioFormat(url, contentType = '') {
+  // 1. 优先用响应头的 MIME 类型
+  const mime = contentType.split(';')[0].trim().toLowerCase();
+  if (AUDIO_TYPES[mime]) {
+    return AUDIO_TYPES[mime].toUpperCase();
+  }
+
   try {
-    // 1. 从URL的文件扩展名获取格式
     const urlObj = new URL(url);
-    const pathname = urlObj.pathname.toLowerCase();
-    const extension = pathname.split('.').pop();
-    
-    // 检查是否是已知的音频格式
-    const knownFormats = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma', 'webm'];
-    if (knownFormats.includes(extension)) {
+
+    // 2. 从URL的文件扩展名获取格式
+    const extension = urlObj.pathname.toLowerCase().split('.').pop();
+    if (KNOWN_FORMATS.includes(extension)) {
       return extension.toUpperCase();
     }
-    
-    // 2. 从MIME类型获取格式
-    const mimeType = Object.keys(AUDIO_TYPES).find(type => url.includes(type));
-    if (mimeType) {
-      return AUDIO_TYPES[mimeType].toUpperCase();
-    }
-    
+
     // 3. 从URL参数获取格式
-    const searchParams = new URLSearchParams(urlObj.search);
-    const format = searchParams.get('format') || searchParams.get('type');
-    if (format && knownFormats.includes(format.toLowerCase())) {
+    const searchParams = urlObj.searchParams;
+    const format = (searchParams.get('format') || searchParams.get('type') || '').toLowerCase();
+    if (KNOWN_FORMATS.includes(format)) {
       return format.toUpperCase();
     }
-    
-    // 4. 默认返回MP3
-    return 'MP3';
   } catch (e) {
-    return 'MP3';
+    // URL 解析失败时走下面的兜底
   }
+
+  // 4. 无从判断时返回空，由调用方决定是否补扩展名
+  return '';
 }
 
 // 预览音频

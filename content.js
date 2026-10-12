@@ -68,6 +68,7 @@ function addFloatingButton() {
   const button = document.createElement('div');
   button.className = 'audio-sniffer-float-btn';
   button.id = 'audioSnifferFloatBtn';
+  button.style.setProperty('display', 'none', 'important');
   button.innerHTML = `
     <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       <path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
@@ -196,26 +197,35 @@ function addFloatingButton() {
     }
   });
 
-  // 从存储中获取开关状态并设置初始显示状态
-  chrome.storage.local.get(['showFloatIcon'], function(result) {
-    if (result.showFloatIcon === false) {
-      button.style.display = 'none';
-    } else {
-      button.style.display = 'flex';
+  let visibilityRevision = 0;
+  const setVisibility = (show) => {
+    button.style.setProperty('display', show !== false ? 'flex' : 'none', 'important');
+  };
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'local' && changes.showFloatIcon) {
+      visibilityRevision++;
+      setVisibility(changes.showFloatIcon.newValue);
     }
   });
 
-  // 监听开关消息
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (handleExtensionError()) return;
-
-    if (message.type === 'TOGGLE_FLOAT_ICON') {
-      const floatBtn = document.getElementById('audioSnifferFloatBtn');
-      if (floatBtn) {
-        floatBtn.style.display = message.show ? 'flex' : 'none';
+  const syncVisibility = () => {
+    const revision = ++visibilityRevision;
+    chrome.storage.local.get(['showFloatIcon'], (result) => {
+      if (chrome.runtime.lastError) {
+        console.debug('Failed to read float icon setting:', chrome.runtime.lastError);
+        return;
       }
-    }
-    // ... 其他消息处理保持不变 ...
+      // 初始化或页面恢复的旧读取不能覆盖较新的设置。
+      if (revision === visibilityRevision) {
+        setVisibility(result.showFloatIcon);
+      }
+    });
+  };
+
+  syncVisibility();
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) syncVisibility();
   });
 }
 

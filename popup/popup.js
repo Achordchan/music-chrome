@@ -79,22 +79,31 @@ async function initializePopup() {
   // 检查开关元素是否存在
   const toggle = document.getElementById('floatIconToggle');
   if (toggle) {
-    // 从存储中获取开关状态
+    let savedShowFloatIcon = true;
+    toggle.disabled = true;
     chrome.storage.local.get(['showFloatIcon'], function(result) {
-      toggle.checked = result.showFloatIcon !== false;
+      if (chrome.runtime.lastError) {
+        console.debug('Failed to read float icon setting:', chrome.runtime.lastError);
+        return;
+      }
+      savedShowFloatIcon = result.showFloatIcon !== false;
+      toggle.checked = savedShowFloatIcon;
+      toggle.disabled = false;
     });
 
-    // 监听开关变化
+    // 各页面通过存储变化同步，不依赖当前标签页的加载状态。
     toggle.addEventListener('change', async function() {
       const showFloatIcon = this.checked;
-      chrome.storage.local.set({ showFloatIcon: showFloatIcon });
-      
-      const tabs = await chrome.tabs.query({active: true, currentWindow: true});
-      if (tabs[0]) {
-        await sendMessageToTab(tabs[0].id, {
-          type: 'TOGGLE_FLOAT_ICON',
-          show: showFloatIcon
-        });
+      toggle.disabled = true;
+      try {
+        await chrome.storage.local.set({ showFloatIcon });
+        savedShowFloatIcon = showFloatIcon;
+      } catch (error) {
+        toggle.checked = savedShowFloatIcon;
+        console.debug('Failed to save float icon setting:', error);
+        alert('悬浮图标设置保存失败，请重试。');
+      } finally {
+        toggle.disabled = false;
       }
     });
   }
